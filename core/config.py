@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings
-from pydantic import SecretStr
+from pydantic import SecretStr, ConfigDict
 
 
 class Settings(BaseSettings):
@@ -22,15 +22,10 @@ class Settings(BaseSettings):
     redis_decode_responses: bool = True
     log_level: str = "INFO"
 
-    class Config:
-        """
-        Pydantic settings configuration.
-
-        - env_file: Load environment variables from a `.env` file.
-        """
-
-        env_file = ".env"
-        env_prefix = "APP_"
+    model_config = ConfigDict(
+        env_file=".env",
+        env_prefix="APP_",
+    )
 
 
 # Singleton settings instance to be imported throughout the project

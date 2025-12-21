@@ -53,11 +53,6 @@ class DAGService:
 
         Raises:
             ValueError: If validation fails due to duplicate IDs, missing dependencies, or circular dependencies.
-
-        Example:
-            >>> dag_service = DAGService()
-            >>> execution_id = dag_service.validate_and_build(workflow)
-            >>> print(f"Workflow initialized with ID: {execution_id}")
         """
         logger.info(f"Starting validation and DAG build for workflow: {workflow.name}")
         self._validate_workflow(workflow)
@@ -160,10 +155,7 @@ class DAGService:
         execution_id = str(uuid.uuid4())
         redis_client.hset(
             f"{WORKFLOW_KEY}:{execution_id}",
-            {
-                "name": workflow.name,
-                "status": "PENDING",
-            },
+            mapping={"name": workflow.name, "status": "PENDING"},
         )
         logger.info(f"Workflow metadata persisted with execution ID: {execution_id}")
         return execution_id
