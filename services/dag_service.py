@@ -1,5 +1,6 @@
 import uuid
 import networkx as nx
+from fastapi import HTTPException
 from schemas import WorkflowSchema, NodeState
 from core import redis_client, get_logger, get_node_key
 
@@ -86,5 +87,8 @@ class DAGService:
         """Fetches and reconstructs the DAG blueprint from Redis."""
         raw_json = await redis_client.get_dag(execution_id)
         if not raw_json:
-            raise ValueError(f"Workflow execution {execution_id} not found.")
+            raise HTTPException(
+                status_code=404,
+                detail="Workflow DAG structure not found",
+            )
         return WorkflowSchema.model_validate_json(raw_json)

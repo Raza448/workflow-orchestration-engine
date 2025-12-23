@@ -37,12 +37,12 @@ class RedisClient:
         client = await self.connect()
         return await client.get(f"dag_def:{execution_id}")
 
-    # async def set_runtime_params(self, execution_id: str, params: dict):
-    #     """Stores parameters provided during the /trigger call."""
-    #     client = await self.connect()
-    #     key = get_runtime_params_key(execution_id)
-    #     await client.hset(key, mapping={k: json.dumps(v) for k, v in params.items()})
-    #     await client.expire(key, 86400)
+    async def set_runtime_params(self, execution_id: str, params: dict):
+        """Stores parameters provided during the /trigger call."""
+        client = await self.connect()
+        key = get_runtime_params_key(execution_id)
+        await client.hset(key, mapping={k: json.dumps(v) for k, v in params.items()})
+        await client.expire(key, 86400)
 
     async def get_runtime_params(self, execution_id: str) -> dict:
         client = await self.connect()

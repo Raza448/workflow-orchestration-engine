@@ -43,14 +43,15 @@ async def submit_workflow(workflow: WorkflowSchema):
 
 
 @router.post("/workflow/trigger/{execution_id}", response_model=WorkflowTriggerResponse)
-async def trigger_workflow(execution_id: str):
+async def trigger_workflow(execution_id: str, params: dict | None = None):
     """
-    Starts the execution of a submitted workflow.
+    Starts the execution of a submitted workflow with optional runtime parameters.
     """
     try:
         engine = OrchestrationEngine(execution_id)
-        await engine.initialize()
-        await engine.trigger()
+
+        # Trigger workflow execution asynchronously
+        await engine.trigger(params)
 
         return WorkflowTriggerResponse(
             execution_id=execution_id,
@@ -81,12 +82,7 @@ async def get_workflow_status(execution_id: str):
             raise HTTPException(status_code=404, detail="Workflow meta not found")
 
         # 2. Fetch DAG
-        workflow = await DAGService.get_dag_by_execution_id(execution_id)
-        if not workflow:
-            raise HTTPException(
-                status_code=404,
-                detail="Workflow DAG structure not found",
-            )
+        workflow = await DAGService.get_dag_by_execution_id("sfdskfghdfgh")
 
         # 3. Fetch node states
         engine = OrchestrationEngine(execution_id)

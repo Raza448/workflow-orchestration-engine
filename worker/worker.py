@@ -101,21 +101,22 @@ class KafkaWorker:
             logger.warning(f"Handler {handler} not found. Skipping.")
             return {"status": "unhandled"}
 
-        return await handler_func(config)
+        return await handler_func(config, node_id)
 
-    async def _handle_call_external_service(self, config):
+    async def _handle_call_external_service(self, config, node_id):
+        print(f"Calling external service at {config} for node {node_id}")
         """Handles the 'call_external_service' logic."""
         await asyncio.sleep(random.uniform(0.5, 1.0))
         return {"data": f"Response from {config.get('url')}"}
 
-    async def _handle_call_llm_service(self, config):
+    async def _handle_call_llm_service(self, config, node_id):
         """Handles the 'call_llm_service' logic."""
         await asyncio.sleep(1.5)
         return {
             "result": f"LLM generated a summary for the prompt '{config.get('prompt')}'"
         }
 
-    async def _handle_output(self, config):
+    async def _handle_output(self, config, node_id):
         """Handles the 'output' logic."""
         aggregated_data = config.get("__parent_outputs__", {})
         return {
@@ -123,7 +124,7 @@ class KafkaWorker:
             "aggregated_results": aggregated_data,
         }
 
-    async def _handle_input(self, config):
+    async def _handle_input(self, config, node_id):
         """Handles the 'input' logic."""
         return {"value": config.get("value", "default_input")}
 
