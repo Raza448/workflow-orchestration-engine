@@ -26,3 +26,6 @@ def get_logger(name: str | None = None) -> logging.Logger:
     Get a module-level logger.
     """
     return logging.getLogger(name)
+
+
+setup_logging(level="INFO")
