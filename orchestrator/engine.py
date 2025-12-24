@@ -68,92 +68,109 @@ class OrchestrationEngine:
 
     async def initialize(self):
         """Hydrates the engine by fetching the validated WorkflowSchema from Redis."""
-        raw_json = await redis_client.get_dag(self.execution_id)
-        if not raw_json:
-            raise HTTPException(
-                status_code=404,
-                detail="Workflow DAG structure not found",
+        try:
+            raw_json = await redis_client.get_dag(self.execution_id)
+            if not raw_json:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Workflow DAG structure not found",
+                )
+            self.workflow = WorkflowSchema.model_validate_json(raw_json)
+            logger.info(
+                f"[{self.execution_id}] Engine initialized for workflow: {self.workflow.name}"
             )
-        self.workflow = WorkflowSchema.model_validate_json(raw_json)
-        logger.info(
-            f"[{self.execution_id}] Engine initialized for workflow: {self.workflow.name}"
-        )
-        return self
+            return self
+        except Exception as e:
+            logger.error(f"Error initializing engine: {e}")
+            raise
 
     async def trigger(self, params: dict | None = None):
         """Entry point to start the workflow execution."""
-        if params:
-            await redis_client.set_runtime_params(self.execution_id, params)
+        try:
+            if params:
+                await redis_client.set_runtime_params(self.execution_id, params)
 
-        if not self.workflow:
-            await self.initialize()
+            if not self.workflow:
+                await self.initialize()
 
-        logger.info(f"[{self.execution_id}] Triggering workflow...")
-        await self._dispatch_ready_nodes()
+            logger.info(f"[{self.execution_id}] Triggering workflow...")
+            await self._dispatch_ready_nodes()
+        except Exception as e:
+            logger.error(f"Error triggering engine: {e}")
+            raise
 
     async def _dispatch_ready_nodes(self):
         """Scans all nodes and dispatches those whose dependencies are COMPLETED."""
-        node_states = await self._get_all_node_states()
-        runtime_params = await redis_client.get_runtime_params(self.execution_id)
-        logger.info(f"runtime_params: {runtime_params}")
+        try:
+            node_states = await self._get_all_node_states()
+            runtime_params = await redis_client.get_runtime_params(self.execution_id)
+            logger.info(f"runtime_params: {runtime_params}")
 
-        for node in self.workflow.dag.nodes:
-            if not self._is_node_ready(node, node_states):
-                continue
+            for node in self.workflow.dag.nodes:
+                if not self._is_node_ready(node, node_states):
+                    continue
 
-            if await redis_client.sadd(self.dispatched_set, node.id):
-                logger.info(f"[{self.execution_id}] Dispatching node: {node.id}")
-                config = self._resolve_inputs(node, node_states, runtime_params)
-                logger.info(
-                    f"[{self.execution_id}] Node {node.id} config resolved: {config}"
-                )
+                if await redis_client.sadd(self.dispatched_set, node.id):
+                    logger.info(f"[{self.execution_id}] Dispatching node: {node.id}")
+                    config = self._resolve_inputs(node, node_states, runtime_params)
+                    logger.info(
+                        f"[{self.execution_id}] Node {node.id} config resolved: {config}"
+                    )
 
-                await redis_client.set_node_state(
-                    get_node_key(self.execution_id, node.id), NodeState.RUNNING.value
-                )
+                    await redis_client.set_node_state(
+                        get_node_key(self.execution_id, node.id),
+                        NodeState.RUNNING.value,
+                    )
 
-                logger.info(
-                    f"[{self.execution_id}] Publishing task for node {node.id} to Kafka."
-                )
-                await kafka_client.publish(
-                    WORKFLOW_TASK_TOPIC,
-                    {
-                        "execution_id": self.execution_id,
-                        "node_id": node.id,
-                        "handler": node.handler,
-                        "config": config,
-                    },
-                )
+                    logger.info(
+                        f"[{self.execution_id}] Publishing task for node {node.id} to Kafka."
+                    )
+                    await kafka_client.publish(
+                        WORKFLOW_TASK_TOPIC,
+                        {
+                            "execution_id": self.execution_id,
+                            "node_id": node.id,
+                            "handler": node.handler,
+                            "config": config,
+                        },
+                    )
+        except Exception as e:
+            logger.error(f"Error dispatching ready nodes: {e}")
+            raise
 
     async def process_node_completion(
         self, node_id: str, output: dict[str, Any] = None, success: bool = True
     ):
         """Callback handler for task completion."""
-        if not self.workflow:
-            await self.initialize()
+        try:
+            if not self.workflow:
+                await self.initialize()
 
-        new_state = NodeState.COMPLETED.value if success else NodeState.FAILED.value
-        await redis_client.set_node_state(
-            get_node_key(self.execution_id, node_id), new_state, output=output or {}
-        )
+            new_state = NodeState.COMPLETED.value if success else NodeState.FAILED.value
+            await redis_client.set_node_state(
+                get_node_key(self.execution_id, node_id), new_state, output=output or {}
+            )
 
-        if not success:
-            logger.error(
-                f"[{self.execution_id}] Node {node_id} failed. Short-circuiting."
-            )
-            await redis_client.set_workflow_status(
-                self.meta_key, NodeState.FAILED.value
-            )
-            return
+            if not success:
+                logger.error(
+                    f"[{self.execution_id}] Node {node_id} failed. Short-circuiting."
+                )
+                await redis_client.set_workflow_status(
+                    self.meta_key, NodeState.FAILED.value
+                )
+                return
 
-        node_states = await self._get_all_node_states()
-        if self._are_all_nodes_completed(node_states):
-            logger.info(f"[{self.execution_id}] Workflow completed successfully.")
-            await redis_client.set_workflow_status(
-                self.meta_key, NodeState.COMPLETED.value
-            )
-        else:
-            await self._dispatch_ready_nodes()
+            node_states = await self._get_all_node_states()
+            if self._are_all_nodes_completed(node_states):
+                logger.info(f"[{self.execution_id}] Workflow completed successfully.")
+                await redis_client.set_workflow_status(
+                    self.meta_key, NodeState.COMPLETED.value
+                )
+            else:
+                await self._dispatch_ready_nodes()
+        except Exception as e:
+            logger.error(f"Error processing node completion: {e}")
+            raise
 
     async def _get_all_node_states(self) -> dict[str, Any]:
         """Fetches status of all nodes defined in the DAG."""
@@ -245,3 +262,28 @@ class OrchestrationEngine:
             node_states.get(n.id, {}).get("state") == NodeState.COMPLETED.value
             for n in self.workflow.dag.nodes
         )
+
+    async def trigger_response(self, node_id: str, response: dict, success: bool):
+        """Handles the response for a triggered node."""
+        try:
+            logger.info(
+                f"[{self.execution_id}] Processing response for node {node_id}..."
+            )
+            node_state = await redis_client.get_node_state(
+                get_node_key(self.execution_id, node_id)
+            )
+            if node_state["state"] != NodeState.RUNNING:
+                raise ValueError(f"Node {node_id} is not in progress state.")
+
+            # Update node state based on success flag
+            new_state = NodeState.COMPLETED if success else NodeState.FAILED
+            await redis_client.set_node_state(
+                get_node_key(self.execution_id, node_id), new_state.value, response
+            )
+
+            # Dispatch ready nodes if the node was completed successfully
+            if success:
+                await self._dispatch_ready_nodes()
+        except Exception as e:
+            logger.error(f"Error in trigger_response: {e}")
+            raise

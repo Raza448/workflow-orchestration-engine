@@ -147,20 +147,45 @@ def test_is_node_ready():
     assert engine._is_node_ready(node, node_states)
 
 
-def test_trigger_response():
-    from schemas.workflow import WorkflowTriggerResponse
+from core.utils import get_node_key
 
+...
+
+
+@pytest.mark.asyncio
+async def test_trigger_response():
     engine = OrchestrationEngine("test_execution_id")
-    execution_id = "test_execution_id"
+    node_id = "test_node"
+    response_data = {"output": "test_output"}
+    node_key = get_node_key("test_execution_id", node_id)
 
-    # Test successful trigger
-    response = engine.trigger_response(execution_id, success=True)
-    assert response == WorkflowTriggerResponse(
-        execution_id=execution_id, status=NodeState.RUNNING
-    )
+    with patch(
+        "core.redis_client.get_node_state", new_callable=AsyncMock
+    ) as mock_get_node_state, patch(
+        "core.redis_client.set_node_state", new_callable=AsyncMock
+    ) as mock_set_node_state, patch.object(
+        engine, "_dispatch_ready_nodes", new_callable=AsyncMock
+    ) as mock_dispatch:
 
-    # Test failed trigger
-    response = engine.trigger_response(execution_id, success=False)
-    assert response == WorkflowTriggerResponse(
-        execution_id=execution_id, status=NodeState.FAILED
-    )
+        # Test successful trigger
+        mock_get_node_state.return_value = {"state": NodeState.RUNNING.value}
+        await engine.trigger_response(node_id, response_data, success=True)
+        mock_set_node_state.assert_called_with(
+            node_key,
+            NodeState.COMPLETED.value,
+            response_data,
+        )
+        mock_dispatch.assert_called_once()
+
+        # Reset mocks
+        mock_set_node_state.reset_mock()
+        mock_dispatch.reset_mock()
+
+        # Test failed trigger
+        await engine.trigger_response(node_id, response_data, success=False)
+        mock_set_node_state.assert_called_with(
+            node_key,
+            NodeState.FAILED.value,
+            response_data,
+        )
+        mock_dispatch.assert_not_called()

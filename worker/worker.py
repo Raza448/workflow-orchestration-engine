@@ -55,9 +55,10 @@ class KafkaWorker:
                 except asyncio.TimeoutError:
                     continue
                 except Exception as e:
-                    logger.error(f"Worker Loop Error: {e}")
+                    logger.error(f"Error processing message: {e}")
+        except Exception as e:
+            logger.error(f"Worker encountered an error: {e}")
         finally:
-            await self.consumer.stop()
             await kafka_client.disconnect()
 
     async def _execute_task(self, task):

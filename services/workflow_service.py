@@ -30,38 +30,52 @@ class WorkflowService:
 
     async def submit(self, workflow: WorkflowSchema) -> str:
         """Handles the logic for creating/validating a new DAG."""
-        execution_id = await self.validate_and_build(workflow)
-        return execution_id
+        try:
+            execution_id = await self.validate_and_build(workflow)
+            return execution_id
+        except Exception as e:
+            self.logger.error(f"Error submitting workflow: {e}")
+            raise
 
     async def trigger(self, execution_id: str, params: dict[str, Any] | None = None):
         """Triggers the execution of a workflow given its execution ID."""
-        meta = await self.redis.get_workflow_meta(execution_id)
-        if not meta:
-            raise HTTPException(
-                status_code=404, detail=f"Execution {execution_id} not found"
-            )
+        try:
+            meta = await self.redis.get_workflow_meta(execution_id)
+            if not meta:
+                raise HTTPException(
+                    status_code=404, detail=f"Execution {execution_id} not found"
+                )
 
-        engine = OrchestrationEngine(execution_id)
-        await engine.trigger(params)
+            engine = OrchestrationEngine(execution_id)
+            await engine.trigger(params)
+        except Exception as e:
+            self.logger.error(f"Error triggering workflow: {e}")
+            raise
 
     async def get_status(self, execution_id: str) -> WorkflowStatusResponse:
         """Aggregates the current state of the workflow and all its nodes."""
-        meta = await self.redis.get_workflow_meta(execution_id)
-        if not meta:
-            raise HTTPException(status_code=404, detail="Workflow not found")
+        try:
+            meta = await self.redis.get_workflow_meta(execution_id)
+            if not meta:
+                raise HTTPException(
+                    status_code=404, detail=f"Execution {execution_id} not found"
+                )
 
-        engine = OrchestrationEngine(execution_id)
-        await engine.initialize()
-        node_states = await engine._get_all_node_states()
+            engine = OrchestrationEngine(execution_id)
+            await engine.initialize()
+            node_states = await engine._get_all_node_states()
 
-        return WorkflowStatusResponse(
-            execution_id=execution_id,
-            status=meta["status"],
-            nodes={
-                nid: NodeStatus(state=data["state"], output=data.get("output"))
-                for nid, data in node_states.items()
-            },
-        )
+            return WorkflowStatusResponse(
+                execution_id=execution_id,
+                status=meta["status"],
+                nodes={
+                    nid: NodeStatus(state=data["state"], output=data.get("output"))
+                    for nid, data in node_states.items()
+                },
+            )
+        except Exception as e:
+            self.logger.error(f"Error fetching workflow status: {e}")
+            raise
 
     async def get_results(self, execution_id: str) -> dict[str, Any]:
         """Returns results only if the workflow is completed."""
