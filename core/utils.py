@@ -1,4 +1,4 @@
-WORKFLOW_PREFIX = "workflows"
+from .constants import WORKFLOW_PREFIX
 
 
 def get_workflow_meta_key(execution_id: str) -> str:

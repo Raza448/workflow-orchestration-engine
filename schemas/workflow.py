@@ -1,5 +1,6 @@
 from enum import Enum
 from pydantic import BaseModel, Field, model_validator
+from typing import Any
 
 
 class NodeConfig(BaseModel):
@@ -106,3 +107,10 @@ class WorkflowStatusResponse(BaseModel):
     execution_id: str
     status: NodeState
     nodes: dict[str, NodeStatus]
+
+
+class TaskSchema(BaseModel):
+    execution_id: str
+    node_id: str
+    handler: HandlerType
+    config: dict[str, Any] = {}

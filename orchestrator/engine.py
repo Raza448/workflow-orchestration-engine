@@ -1,6 +1,7 @@
 import json
 import re
 from typing import Any
+from fastapi import HTTPException
 from core import (
     redis_client,
     get_logger,
@@ -10,7 +11,7 @@ from core import (
     get_workflow_meta_key,
     WORKFLOW_TASK_TOPIC,
 )
-from services.dag_service import DAGService
+
 from schemas.workflow import NodeState, WorkflowSchema
 
 logger = get_logger(__name__)
@@ -67,7 +68,13 @@ class OrchestrationEngine:
 
     async def initialize(self):
         """Hydrates the engine by fetching the validated WorkflowSchema from Redis."""
-        self.workflow = await DAGService.get_dag_by_execution_id(self.execution_id)
+        raw_json = await redis_client.get_dag(self.execution_id)
+        if not raw_json:
+            raise HTTPException(
+                status_code=404,
+                detail="Workflow DAG structure not found",
+            )
+        self.workflow = WorkflowSchema.model_validate_json(raw_json)
         logger.info(
             f"[{self.execution_id}] Engine initialized for workflow: {self.workflow.name}"
         )
