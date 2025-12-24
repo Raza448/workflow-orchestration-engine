@@ -1,29 +1,74 @@
+import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+from pytest_asyncio.plugin import event_loop_policy
 from orchestrator.engine import OrchestrationEngine
 from schemas.workflow import NodeState, WorkflowSchema
+import json
+
+
+@pytest.fixture(scope="session")
+def event_loop():
+    policy = event_loop_policy()
+    asyncio.set_event_loop_policy(policy)
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
+
+
+@pytest.fixture
+def mock_redis_client():
+    with patch("core.redis.RedisClient.connect", new_callable=AsyncMock) as mock_connect:
+        mock_connect.return_value = MagicMock()
+        mock_connect.return_value.ping = AsyncMock()
+        mock_connect.return_value.get = AsyncMock(return_value='{"name": "Test Workflow", "dag": {"nodes": []}}')
+        mock_connect.return_value.hset = AsyncMock()
+        mock_connect.return_value.hgetall = AsyncMock(return_value={})
+        mock_connect.return_value.set = AsyncMock()
+        mock_connect.return_value.expire = AsyncMock()
+        yield mock_connect
 
 
 @pytest.mark.asyncio
 async def test_initialize():
     engine = OrchestrationEngine("test_execution_id")
-    with patch(
-        "services.dag_service.DAGService.get_dag_by_execution_id",
-        new_callable=AsyncMock,
-    ) as mock_get_dag:
-        mock_get_dag.return_value = MagicMock(name="Test Workflow")
-        mock_get_dag.return_value.name = "Test Workflow"
-        await engine.initialize()
-        assert engine.workflow.name == "Test Workflow"
+    with patch("core.redis_client.get_dag", new_callable=AsyncMock) as mock_get_dag:
+        mock_get_dag.return_value = '{"name": "Test Workflow", "dag": {"nodes": []}}'  # Provide a valid mock response
+
+        with patch(
+            "services.workflow_service.WorkflowService.get_status",  # Updated to match existing method
+            new_callable=AsyncMock,
+        ) as mock_get_status:
+            mock_get_status.return_value = MagicMock(name="Test Workflow")
+            mock_get_status.return_value.name = "Test Workflow"
+
+            await engine.initialize()
+            assert engine.workflow.name == "Test Workflow"
 
 
 @pytest.mark.asyncio
-async def test_trigger():
+async def test_trigger(mock_redis_client):
     engine = OrchestrationEngine("test_execution_id")
     engine.initialize = AsyncMock()
     engine._dispatch_ready_nodes = AsyncMock()
 
+    # Test without params
     await engine.trigger()
+    engine.initialize.assert_called_once()
+    engine._dispatch_ready_nodes.assert_called_once()
+    mock_redis_client.return_value.hset.assert_not_called()
+
+    # Reset mocks
+    engine.initialize.reset_mock()
+    engine._dispatch_ready_nodes.reset_mock()
+    mock_redis_client.return_value.hset.reset_mock()
+
+    # Test with params
+    params = {"key": "value"}
+    await engine.trigger(params=params)
+    mock_redis_client.return_value.hset.assert_called_once_with(
+        "workflows:test_execution_id:params", mapping={"key": json.dumps("value")}
+    )
     engine.initialize.assert_called_once()
     engine._dispatch_ready_nodes.assert_called_once()
 

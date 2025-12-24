@@ -1,6 +1,7 @@
 import json
 import re
 from typing import Any
+from fastapi import HTTPException
 from core import (
     redis_client,
     get_logger,
@@ -10,7 +11,7 @@ from core import (
     get_workflow_meta_key,
     WORKFLOW_TASK_TOPIC,
 )
-from services.dag_service import DAGService
+
 from schemas.workflow import NodeState, WorkflowSchema
 
 logger = get_logger(__name__)
@@ -67,14 +68,23 @@ class OrchestrationEngine:
 
     async def initialize(self):
         """Hydrates the engine by fetching the validated WorkflowSchema from Redis."""
-        self.workflow = await DAGService.get_dag_by_execution_id(self.execution_id)
+        raw_json = await redis_client.get_dag(self.execution_id)
+        if not raw_json:
+            raise HTTPException(
+                status_code=404,
+                detail="Workflow DAG structure not found",
+            )
+        self.workflow = WorkflowSchema.model_validate_json(raw_json)
         logger.info(
             f"[{self.execution_id}] Engine initialized for workflow: {self.workflow.name}"
         )
         return self
 
-    async def trigger(self):
+    async def trigger(self, params: dict | None = None):
         """Entry point to start the workflow execution."""
+        if params:
+            await redis_client.set_runtime_params(self.execution_id, params)
+
         if not self.workflow:
             await self.initialize()
 
@@ -85,6 +95,7 @@ class OrchestrationEngine:
         """Scans all nodes and dispatches those whose dependencies are COMPLETED."""
         node_states = await self._get_all_node_states()
         runtime_params = await redis_client.get_runtime_params(self.execution_id)
+        logger.info(f"runtime_params: {runtime_params}")
 
         for node in self.workflow.dag.nodes:
             if not self._is_node_ready(node, node_states):
@@ -162,30 +173,51 @@ class OrchestrationEngine:
     def _resolve_inputs(
         self, node, node_states: dict[str, Any], runtime_params: dict[str, Any]
     ) -> dict[str, Any]:
-        """Resolves input templates for a node."""
+        """
+        Resolves the configuration for a node by:
+        1. Merging workflow-defined config with runtime params for this node.
+        2. Injecting parent node outputs.
+        3. Resolving template placeholders in strings.
+        """
+
+        # 1️⃣ Base config from workflow
         config_dict = node.config.model_dump() if node.config else {}
+
+        # 2️⃣ Add parent outputs
         config_dict["__parent_outputs__"] = self._aggregate_parent_outputs(
             node, node_states
         )
 
+        # 3️⃣ Merge node-specific runtime params
+        node_runtime_params = runtime_params.get(node.id, {}) if runtime_params else {}
+        merged_config = {**config_dict, **node_runtime_params}
+
+        # 4️⃣ Template resolution function
         def replace_match(match):
             path = match.group(1).strip()
             parts = path.split(".")
-            if len(parts) >= 2:
-                return self._resolve_node_reference(parts, node_states, match.group(0))
-            if parts[0] == "runtime" and len(parts) > 1:
-                return str(runtime_params.get(parts[1], match.group(0)))
+            # Reference to parent node outputs: {{ parent_node.output.key }}
+            if len(parts) >= 2 and parts[1] == "output":
+                return str(
+                    self._resolve_node_reference(parts, node_states, match.group(0))
+                )
+            # Runtime param reference: {{ runtime.key }}
+            if parts[0] == "runtime":
+                return str(node_runtime_params.get(parts[1], match.group(0)))
             return match.group(0)
 
-        return {
+        # 5️⃣ Apply template resolution for all string values
+        resolved_config = {
             k: re.sub(r"{{\s*(.*?)\s*}}", replace_match, v) if isinstance(v, str) else v
-            for k, v in config_dict.items()
+            for k, v in merged_config.items()
         }
+
+        return resolved_config
 
     def _aggregate_parent_outputs(
         self, node, node_states: dict[str, Any]
     ) -> dict[str, Any]:
-        """Aggregates outputs from parent nodes."""
+        """Collects outputs from all parent nodes of a given node."""
         return {
             dep_id: node_states.get(dep_id, {}).get("output", {})
             for dep_id in node.dependencies

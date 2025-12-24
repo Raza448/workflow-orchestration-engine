@@ -8,6 +8,9 @@ from core.kafka import kafka_client
 from core.utils import get_node_key
 from core.constants import WORKFLOW_TASK_TOPIC
 from orchestrator import OrchestrationEngine
+from schemas.workflow import TaskSchema
+from pydantic import ValidationError
+
 
 logger = get_logger(__name__)
 
@@ -64,7 +67,13 @@ class KafkaWorker:
         Args:
             task (dict): The task configuration and execution metadata.
         """
-        execution_id, node_id = task["execution_id"], task["node_id"]
+        try:
+            validated_task = TaskSchema(**task)  # Validate the task using TaskSchema
+        except ValidationError as e:
+            logger.error(f"Invalid task received: {e}")
+            return
+
+        execution_id, node_id = validated_task.execution_id, validated_task.node_id
 
         # IDEMPOTENCY: Do not execute if already completed
         node_key = get_node_key(execution_id, node_id)
@@ -75,7 +84,7 @@ class KafkaWorker:
 
         try:
             output = await self._run_handler_logic(
-                task["handler"], task.get("config", {}), node_id
+                validated_task.handler, validated_task.config, node_id
             )
             engine = OrchestrationEngine(execution_id)
             await engine.process_node_completion(node_id, output, success=True)
@@ -101,21 +110,22 @@ class KafkaWorker:
             logger.warning(f"Handler {handler} not found. Skipping.")
             return {"status": "unhandled"}
 
-        return await handler_func(config)
+        return await handler_func(config, node_id)
 
-    async def _handle_call_external_service(self, config):
+    async def _handle_call_external_service(self, config, node_id):
+        print(f"Calling external service at {config} for node {node_id}")
         """Handles the 'call_external_service' logic."""
         await asyncio.sleep(random.uniform(0.5, 1.0))
         return {"data": f"Response from {config.get('url')}"}
 
-    async def _handle_call_llm_service(self, config):
+    async def _handle_call_llm_service(self, config, node_id):
         """Handles the 'call_llm_service' logic."""
         await asyncio.sleep(1.5)
         return {
             "result": f"LLM generated a summary for the prompt '{config.get('prompt')}'"
         }
 
-    async def _handle_output(self, config):
+    async def _handle_output(self, config, node_id):
         """Handles the 'output' logic."""
         aggregated_data = config.get("__parent_outputs__", {})
         return {
@@ -123,7 +133,7 @@ class KafkaWorker:
             "aggregated_results": aggregated_data,
         }
 
-    async def _handle_input(self, config):
+    async def _handle_input(self, config, node_id):
         """Handles the 'input' logic."""
         return {"value": config.get("value", "default_input")}
 
