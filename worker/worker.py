@@ -9,10 +9,14 @@ from core.kafka import kafka_client
 from core.logging import get_logger
 from core.redis import redis_client
 from core.utils import get_node_key
+from core.config import settings
 from orchestrator import OrchestrationEngine
 from schemas.workflow import TaskSchema
 
 logger = get_logger(__name__)
+
+MAX_RETRIES = settings.max_retries or 5
+BASE_BACKOFF = (settings.base_backoff or 1000) / 1000  # convert ms to seconds
 
 
 class KafkaWorker:
@@ -63,36 +67,47 @@ class KafkaWorker:
 
     async def _execute_task(self, task):
         """
-        Executes a task with a pre-flight idempotency check.
+        Executes a task with idempotency check and retry logic.
 
         Args:
             task (dict): The task configuration and execution metadata.
         """
         try:
-            validated_task = TaskSchema(**task)  # Validate the task using TaskSchema
+            validated_task = TaskSchema(**task)
         except ValidationError as e:
             logger.error(f"Invalid task received: {e}")
             return
 
         execution_id, node_id = validated_task.execution_id, validated_task.node_id
+        node_key = get_node_key(execution_id, node_id)
 
         # IDEMPOTENCY: Do not execute if already completed
-        node_key = get_node_key(execution_id, node_id)
         state_data = await redis_client.get_node_state(node_key)
         if state_data and state_data.get("state") == "COMPLETED":
             logger.info(f"Node {node_id} already finished. Skipping.")
             return
 
-        try:
-            output = await self._run_handler_logic(
-                validated_task.handler, validated_task.config, node_id
-            )
-            engine = OrchestrationEngine(execution_id)
-            await engine.process_node_completion(node_id, output, success=True)
-        except Exception as e:
-            logger.error(f"Execution Error in {node_id}: {e}")
-            engine = OrchestrationEngine(execution_id)
-            await engine.process_node_completion(node_id, {}, success=False)
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                output = await self._run_handler_logic(
+                    validated_task.handler, validated_task.config, node_id
+                )
+                engine = OrchestrationEngine(execution_id)
+                await engine.process_node_completion(node_id, output, success=True)
+                return  # success
+            except Exception as e:
+                logger.error(f"Execution Error in {node_id} attempt {attempt}: {e}")
+                if attempt < MAX_RETRIES:
+                    backoff = BASE_BACKOFF * (2 ** (attempt - 1))  # exponential backoff
+                    logger.info(f"Retrying node {node_id} after {backoff}s...")
+                    await asyncio.sleep(backoff)
+                else:
+                    # Final failure after retries
+                    logger.error(
+                        f"Node {node_id} failed after {MAX_RETRIES} attempts. Marking as FAILED."
+                    )
+                    engine = OrchestrationEngine(execution_id)
+                    await engine.process_node_completion(node_id, {}, success=False)
 
     async def _run_handler_logic(self, handler, config, node_id):
         """
@@ -111,22 +126,21 @@ class KafkaWorker:
             logger.warning(f"Handler {handler} not found. Skipping.")
             return {"status": "unhandled"}
 
-        return await handler_func(config, node_id)
+        return await handler_func(config)
 
-    async def _handle_call_external_service(self, config, node_id):
-        print(f"Calling external service at {config} for node {node_id}")
+    async def _handle_call_external_service(self, config):
         """Handles the 'call_external_service' logic."""
         await asyncio.sleep(random.uniform(0.5, 1.0))
         return {"data": f"Response from {config.get('url')}"}
 
-    async def _handle_call_llm_service(self, config, node_id):
+    async def _handle_call_llm_service(self, config):
         """Handles the 'call_llm_service' logic."""
         await asyncio.sleep(1.5)
         return {
             "result": f"LLM generated a summary for the prompt '{config.get('prompt')}'"
         }
 
-    async def _handle_output(self, config, node_id):
+    async def _handle_output(self, config):
         """Handles the 'output' logic."""
         aggregated_data = config.get("__parent_outputs__", {})
         return {
@@ -134,7 +148,7 @@ class KafkaWorker:
             "aggregated_results": aggregated_data,
         }
 
-    async def _handle_input(self, config, node_id):
+    async def _handle_input(self, config):
         """Handles the 'input' logic."""
         return {"value": config.get("value", "default_input")}
 

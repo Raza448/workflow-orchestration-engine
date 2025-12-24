@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     redis_password: SecretStr
     redis_decode_responses: bool = True
     log_level: str = "INFO"
+    max_retries: int
+    base_backoff: int
+    retry_delay: int
+    kafka_bootstrap_servers: str
 
     model_config = ConfigDict(
         env_file=".env",
