@@ -10,35 +10,50 @@ logger = get_logger(__name__)
 
 
 class WorkflowService:
+    """Stateless service for managing workflow lifecycle operations.
+
+    Handles workflow validation, execution triggering, status tracking,
+    and result retrieval. Interacts with Redis for persistence and uses
+    NetworkX for graph validation.
+    """
+
     def __init__(self):
-        # In a more advanced setup, you could inject these via FastAPI Depends
+        """Initialize the workflow service with Redis client and logger."""
         self.redis = redis_client
         self.logger = logger
-        self.workflow: WorkflowSchema | None = None
-
-    def initialize_workflow(self, workflow: WorkflowSchema):
-        self.workflow = workflow
-        self.nodes = workflow.dag.nodes
-        self.node_map = {node.id: node for node in self.nodes}
-
-        # Build graph for cycle detection
-        self.graph = nx.DiGraph()
-        for node in self.nodes:
-            self.graph.add_node(node.id)
-            for dep in node.dependencies:
-                self.graph.add_edge(dep, node.id)
 
     async def submit(self, workflow: WorkflowSchema) -> str:
-        """Handles the logic for creating/validating a new DAG."""
+        """
+        Handles the logic for creating/validating a new DAG.
+
+        Args:
+            workflow: The workflow schema to submit.
+
+        Returns:
+            str: The execution ID of the submitted workflow.
+
+        Raises:
+            ValueError: If workflow validation fails.
+            RuntimeError: If workflow initialization fails.
+        """
         try:
-            execution_id = await self.validate_and_build(workflow)
+            execution_id = await self._validate_and_build(workflow)
             return execution_id
         except Exception as e:
             self.logger.error(f"Error submitting workflow: {e}")
             raise
 
     async def trigger(self, execution_id: str, params: dict[str, Any] | None = None):
-        """Triggers the execution of a workflow given its execution ID."""
+        """
+        Triggers the execution of a workflow given its execution ID.
+
+        Args:
+            execution_id: The unique identifier of the workflow execution.
+            params: Optional runtime parameters for workflow execution.
+
+        Raises:
+            HTTPException: If the workflow execution is not found.
+        """
         try:
             meta = await self.redis.get_workflow_meta(execution_id)
             if not meta:
@@ -53,7 +68,18 @@ class WorkflowService:
             raise
 
     async def get_status(self, execution_id: str) -> WorkflowStatusResponse:
-        """Aggregates the current state of the workflow and all its nodes."""
+        """
+        Aggregates the current state of the workflow and all its nodes.
+
+        Args:
+            execution_id: The unique identifier of the workflow execution.
+
+        Returns:
+            WorkflowStatusResponse: Current status of the workflow and its nodes.
+
+        Raises:
+            HTTPException: If the workflow execution is not found.
+        """
         try:
             meta = await self.redis.get_workflow_meta(execution_id)
             if not meta:
@@ -78,7 +104,18 @@ class WorkflowService:
             raise
 
     async def get_results(self, execution_id: str) -> dict[str, Any]:
-        """Returns results only if the workflow is completed."""
+        """
+        Returns results only if the workflow is completed.
+
+        Args:
+            execution_id: The unique identifier of the workflow execution.
+
+        Returns:
+            dict: Dictionary containing execution status and results.
+
+        Raises:
+            HTTPException: If the workflow execution is not found.
+        """
         meta = await self.redis.get_workflow_meta(execution_id)
         if not meta:
             raise HTTPException(status_code=404, detail="Workflow not found")
@@ -90,7 +127,10 @@ class WorkflowService:
             engine = OrchestrationEngine(execution_id)
             await engine.initialize()
             node_states = await engine._get_all_node_states()
-            results = {nid: data.get("output") for nid, data in node_states.items()}
+
+            # Only get the output node's results
+            output_node = node_states.get("output", {})
+            results = output_node.get("output", {})
 
         return {
             "execution_id": execution_id,
@@ -104,33 +144,49 @@ class WorkflowService:
             ),
         }
 
-    async def validate_and_build(self, workflow: WorkflowSchema) -> str:
+    async def _validate_and_build(self, workflow: WorkflowSchema) -> str:
         """
         Orchestrates validation and persists the blueprint and initial state.
+
+        Args:
+            workflow: The workflow schema to validate and build.
+
+        Returns:
+            str: The execution ID of the validated workflow.
+
+        Raises:
+            ValueError: If validation fails (cycles, missing nodes, etc.).
+            RuntimeError: If workflow initialization fails.
         """
-
-        if not self.workflow:
-            self.initialize_workflow(workflow)
-
         execution_id = str(uuid.uuid4())
         logger.info(
             f"[{execution_id}] Initializing Workflow DAG build: {workflow.name}"
         )
 
         try:
+            # Extract workflow structure
+            nodes = workflow.dag.nodes
+            node_map = {node.id: node for node in nodes}
+
+            # Build graph for validation
+            graph = nx.DiGraph()
+            for node in nodes:
+                graph.add_node(node.id)
+                for dep in node.dependencies:
+                    graph.add_edge(dep, node.id)
+
             # 1. Structural Validation
-            self._validate_workflow()
-            self._check_cycles()
+            self._validate_workflow(nodes, node_map)
+            self._check_cycles(graph)
 
             # 2. Persist Full Blueprint (WorkflowSchema)
-            # This stores the 'name' and the 'dag' (nodes/dependencies)
-            await redis_client.set_dag(execution_id, self.workflow.model_dump_json())
+            await redis_client.set_dag(execution_id, workflow.model_dump_json())
 
             # 3. Persist Workflow Metadata (Initial Status)
             await redis_client.set_workflow_meta(execution_id, NodeState.PENDING.value)
 
             # 4. Initialize individual node tracking keys
-            await self._initialize_node_states(execution_id)
+            await self._initialize_node_states(execution_id, nodes)
 
             logger.info(f"[{execution_id}] Workflow prepared for execution.")
             return execution_id
@@ -142,27 +198,51 @@ class WorkflowService:
             logger.error(f"[{execution_id}] Setup failure: {e}", exc_info=True)
             raise RuntimeError(f"Workflow initialization failed: {str(e)}")
 
-    def _validate_workflow(self):
-        if len(self.node_map) != len(self.nodes):
+    def _validate_workflow(self, nodes: list, node_map: dict):
+        """
+        Validates the structural integrity of the workflow DAG.
+
+        Args:
+            nodes: List of workflow nodes.
+            node_map: Mapping of node IDs to node objects.
+
+        Raises:
+            ValueError: If duplicate node IDs or missing dependencies are found.
+        """
+        if len(node_map) != len(nodes):
             raise ValueError("Integrity error: Duplicate Node IDs detected.")
 
-        for node in self.nodes:
+        for node in nodes:
             for dep in node.dependencies:
-                if dep not in self.node_map:
+                if dep not in node_map:
                     raise ValueError(
                         f"Reference error: Node '{node.id}' depends on missing node '{dep}'."
                     )
 
-    def _check_cycles(self):
-        """Detects cycles in the DAG using NetworkX."""
-        if not nx.is_directed_acyclic_graph(self.graph):
-            cycle = nx.find_cycle(self.graph)
+    def _check_cycles(self, graph: nx.DiGraph):
+        """
+        Detects cycles in the DAG using NetworkX.
+
+        Args:
+            graph: Directed graph representing the workflow DAG.
+
+        Raises:
+            ValueError: If a cycle is detected in the graph.
+        """
+        if not nx.is_directed_acyclic_graph(graph):
+            cycle = nx.find_cycle(graph)
             cycle_str = " -> ".join([str(u) for u, v in cycle]) + f" -> {cycle[0][0]}"
             raise ValueError(f"Structural error: Circular dependency: {cycle_str}")
 
-    async def _initialize_node_states(self, execution_id: str):
-        """Sets all nodes to PENDING state at the start of execution."""
-        for node in self.nodes:
+    async def _initialize_node_states(self, execution_id: str, nodes: list):
+        """
+        Sets all nodes to PENDING state at the start of execution.
+
+        Args:
+            execution_id: The unique identifier of the workflow execution.
+            nodes: List of workflow nodes to initialize.
+        """
+        for node in nodes:
             node_key = get_node_key(execution_id, node.id)
             await redis_client.set_node_state(
                 node_key, NodeState.PENDING.value, output={}

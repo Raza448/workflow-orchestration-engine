@@ -1,6 +1,6 @@
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Body
 
 from core import get_logger
 from schemas import (
@@ -17,14 +17,9 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
-# Dependency provider to get a service instance
-def get_workflow_service():
-    return WorkflowService()
-
-
-@router.post("/workflow", response_model=WorkflowSubmitResponse)
+@router.post("/workflow", response_model=WorkflowSubmitResponse, status_code=201)
 async def submit_workflow(
-    workflow: WorkflowSchema, service: WorkflowService = Depends(get_workflow_service)
+    workflow: WorkflowSchema, service: WorkflowService = Depends(WorkflowService)
 ):
     try:
         execution_id = await service.submit(workflow)
@@ -41,11 +36,15 @@ async def submit_workflow(
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
-@router.post("/workflow/trigger/{execution_id}", response_model=WorkflowTriggerResponse)
+@router.post(
+    "/workflow/trigger/{execution_id}",
+    response_model=WorkflowTriggerResponse,
+    status_code=202,
+)
 async def trigger_workflow(
     execution_id: str,
-    params: dict[str, Any] | None = None,
-    service: WorkflowService = Depends(get_workflow_service),
+    params: dict[str, Any] | None = Body(None),
+    service: WorkflowService = Depends(WorkflowService),
 ):
     try:
         await service.trigger(execution_id, params)
@@ -59,9 +58,11 @@ async def trigger_workflow(
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
-@router.get("/workflows/{execution_id}", response_model=WorkflowStatusResponse)
+@router.get(
+    "/workflows/{execution_id}", response_model=WorkflowStatusResponse, status_code=200
+)
 async def get_workflow_status(
-    execution_id: str, service: WorkflowService = Depends(get_workflow_service)
+    execution_id: str, service: WorkflowService = Depends(WorkflowService)
 ):
     try:
         return await service.get_status(execution_id)
@@ -72,9 +73,13 @@ async def get_workflow_status(
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
-@router.get("/workflows/{execution_id}/results", response_model=WorkflowResultsResponse)
+@router.get(
+    "/workflows/{execution_id}/results",
+    response_model=WorkflowResultsResponse,
+    status_code=200,
+)
 async def get_workflow_results(
-    execution_id: str, service: WorkflowService = Depends(get_workflow_service)
+    execution_id: str, service: WorkflowService = Depends(WorkflowService)
 ):
     try:
         return await service.get_results(execution_id)

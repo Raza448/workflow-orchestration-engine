@@ -20,6 +20,16 @@ BASE_BACKOFF = (settings.base_backoff or 1000) / 1000  # convert ms to seconds
 
 
 class KafkaWorker:
+    """KafkaWorker is a class responsible for consuming tasks from a Kafka topic, processing them,
+    and managing their execution lifecycle. It includes idempotency checks, retry logic, and
+    handler-based task execution.
+
+    Attributes:
+        consumer (aiokafka.AIOKafkaConsumer): The Kafka consumer instance for reading messages.
+        _shutdown_event (asyncio.Event): An asyncio event to signal shutdown.
+        _handler_registry (dict): A mapping of handler names to their corresponding methods.
+    """
+
     def __init__(self):
         """Initializes the worker with a shutdown signal tracker and handler registry."""
         self.consumer = None
@@ -90,7 +100,7 @@ class KafkaWorker:
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 output = await self._run_handler_logic(
-                    validated_task.handler, validated_task.config, node_id
+                    validated_task.handler, validated_task.config
                 )
                 engine = OrchestrationEngine(execution_id)
                 await engine.process_node_completion(node_id, output, success=True)
@@ -109,14 +119,13 @@ class KafkaWorker:
                     engine = OrchestrationEngine(execution_id)
                     await engine.process_node_completion(node_id, {}, success=False)
 
-    async def _run_handler_logic(self, handler, config, node_id):
+    async def _run_handler_logic(self, handler, config):
         """
         Executes the registered handler logic.
 
         Args:
             handler (str): The logic handler type.
             config (dict): Configuration with resolved templates.
-            node_id (str): The ID of the node.
 
         Returns:
             dict: The output to be stored in the state store.
