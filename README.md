@@ -241,6 +241,14 @@ Get the results of a workflow.
 }
 ```
 
+## API Documentation
+
+The Swagger UI for the API documentation can be accessed at:
+
+- **Swagger UI**: `http://localhost:8000/docs`
+
+This assumes the application is running locally on port 8000. Adjust the port or host if different.
+
 ## Project Structure
 
 The project is structured as follows:
