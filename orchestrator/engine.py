@@ -3,15 +3,14 @@ import re
 from typing import Any
 from fastapi import HTTPException
 from core import (
-    redis_client,
-    get_logger,
-    kafka_client,
+    WORKFLOW_TASK_TOPIC,
     get_dispatched_set_key,
+    get_logger,
     get_node_key,
     get_workflow_meta_key,
-    WORKFLOW_TASK_TOPIC,
+    kafka_client,
+    redis_client,
 )
-
 from schemas.workflow import NodeState, WorkflowSchema
 
 logger = get_logger(__name__)
@@ -30,7 +29,8 @@ class OrchestrationEngine:
 
     Methods:
         initialize():
-            Hydrates the engine by fetching the validated WorkflowSchema from Redis.
+            Hydrates the engine by fetching the validated WorkflowSchema
+            from Redis.
 
         trigger():
             Entry point to start the workflow execution.

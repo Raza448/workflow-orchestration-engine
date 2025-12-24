@@ -1,16 +1,16 @@
 import asyncio
+import json
 import random
 import signal
-import json
-from core.redis import redis_client
-from core.logging import get_logger
-from core.kafka import kafka_client
-from core.utils import get_node_key
+
+from pydantic import ValidationError
 from core.constants import WORKFLOW_TASK_TOPIC
+from core.kafka import kafka_client
+from core.logging import get_logger
+from core.redis import redis_client
+from core.utils import get_node_key
 from orchestrator import OrchestrationEngine
 from schemas.workflow import TaskSchema
-from pydantic import ValidationError
-
 
 logger = get_logger(__name__)
 

@@ -1,14 +1,17 @@
-from fastapi import APIRouter, Depends, HTTPException
 from typing import Any
+
+from fastapi import APIRouter, Depends
+
+from core import get_logger
 from schemas import (
+    NodeState,
     WorkflowSchema,
+    WorkflowStatusResponse,
     WorkflowSubmitResponse,
     WorkflowTriggerResponse,
-    WorkflowStatusResponse,
-    NodeState,
+    WorkflowResultsResponse,
 )
 from services.workflow_service import WorkflowService
-from core import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -44,7 +47,7 @@ async def get_workflow_status(
     return await service.get_status(execution_id)
 
 
-@router.get("/workflows/{execution_id}/results")
+@router.get("/workflows/{execution_id}/results", response_model=WorkflowResultsResponse)
 async def get_workflow_results(
     execution_id: str, service: WorkflowService = Depends(get_workflow_service)
 ):

@@ -1,7 +1,7 @@
-import redis.asyncio as redis
 import json
+import redis.asyncio as redis
 from core import get_logger, settings
-from core.utils import get_workflow_meta_key, get_runtime_params_key
+from core.utils import get_runtime_params_key, get_workflow_meta_key
 
 logger = get_logger(__name__)
 
