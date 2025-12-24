@@ -1,8 +1,8 @@
+import asyncio
 import json
 import os
-from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
+from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from core import get_logger
-import asyncio
 
 logger = get_logger(__name__)
 

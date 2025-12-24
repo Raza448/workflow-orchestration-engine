@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from core import redis_client, get_logger, kafka_client
+from core import get_logger, kafka_client, redis_client
 
 logger = get_logger(__name__)
 

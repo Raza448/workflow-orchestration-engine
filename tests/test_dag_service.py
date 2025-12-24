@@ -1,11 +1,11 @@
-import pytest
-from schemas import WorkflowSchema, DAGSchema, NodeSchema
-from services.workflow_service import WorkflowService
-from unittest.mock import AsyncMock, MagicMock, patch
 import asyncio
+import pytest
+from schemas import DAGSchema, NodeSchema, WorkflowSchema
 from schemas.workflow import (
     NodeState,
-)  # Import NodeState for test_initialize_node_states
+)
+from services.workflow_service import WorkflowService
+from unittest.mock import AsyncMock, patch
 
 
 # Update NodeSchema to include required `url` key in `config` field

@@ -53,6 +53,23 @@ services:
     networks:
       - app-network
 
+  worker:
+    build:
+      context: .
+    container_name: workflow-worker
+    command: ["python", "worker/worker.py"]
+    volumes:
+      - .:/app
+    env_file:
+      - .env.docker
+    environment:
+      - PYTHONPATH=/app
+    depends_on:
+      - redis
+      - kafka
+    networks:
+      - app-network
+
 networks:
   app-network:
     driver: bridge

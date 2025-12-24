@@ -1,10 +1,11 @@
+from pydantic import ConfigDict, SecretStr
 from pydantic_settings import BaseSettings
-from pydantic import SecretStr, ConfigDict
 
 
 class Settings(BaseSettings):
     """
-    Application configuration loaded from environment variables or defaults.
+    Application configuration loaded from environment variables
+    or defaults.
 
     Attributes:
         redis_host (str): Hostname for the Redis server.

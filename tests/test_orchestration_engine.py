@@ -1,10 +1,10 @@
 import asyncio
+import json
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 from pytest_asyncio.plugin import event_loop_policy
 from orchestrator.engine import OrchestrationEngine
-from schemas.workflow import NodeState, WorkflowSchema
-import json
+from schemas.workflow import NodeState
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 @pytest.fixture(scope="session")
@@ -18,10 +18,14 @@ def event_loop():
 
 @pytest.fixture
 def mock_redis_client():
-    with patch("core.redis.RedisClient.connect", new_callable=AsyncMock) as mock_connect:
+    with patch(
+        "core.redis.RedisClient.connect", new_callable=AsyncMock
+    ) as mock_connect:
         mock_connect.return_value = MagicMock()
         mock_connect.return_value.ping = AsyncMock()
-        mock_connect.return_value.get = AsyncMock(return_value='{"name": "Test Workflow", "dag": {"nodes": []}}')
+        mock_connect.return_value.get = AsyncMock(
+            return_value='{"name": "Test Workflow", "dag": {"nodes": []}}'
+        )
         mock_connect.return_value.hset = AsyncMock()
         mock_connect.return_value.hgetall = AsyncMock(return_value={})
         mock_connect.return_value.set = AsyncMock()
@@ -141,3 +145,22 @@ def test_is_node_ready():
     }
 
     assert engine._is_node_ready(node, node_states)
+
+
+def test_trigger_response():
+    from schemas.workflow import WorkflowTriggerResponse
+
+    engine = OrchestrationEngine("test_execution_id")
+    execution_id = "test_execution_id"
+
+    # Test successful trigger
+    response = engine.trigger_response(execution_id, success=True)
+    assert response == WorkflowTriggerResponse(
+        execution_id=execution_id, status=NodeState.RUNNING
+    )
+
+    # Test failed trigger
+    response = engine.trigger_response(execution_id, success=False)
+    assert response == WorkflowTriggerResponse(
+        execution_id=execution_id, status=NodeState.FAILED
+    )
