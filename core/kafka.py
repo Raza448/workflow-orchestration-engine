@@ -3,6 +3,7 @@ import json
 import os
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from core import get_logger
+from core.config import settings
 
 logger = get_logger(__name__)
 
@@ -11,7 +12,7 @@ class KafkaClient:
     def __init__(self, bootstrap_servers=None):
         # Use environment variable or default to localhost for local dev
         if bootstrap_servers is None:
-            bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+            bootstrap_servers = settings.kafka_bootstrap_servers
         self.bootstrap_servers = bootstrap_servers
         self.producer = None
 
@@ -20,8 +21,8 @@ class KafkaClient:
         if self.producer is not None:
             return
 
-        max_retries = 10
-        retry_delay = 3  # seconds
+        max_retries = settings.max_retries
+        retry_delay = settings.retry_delay  # seconds
 
         for attempt in range(1, max_retries + 1):
             try:

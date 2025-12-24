@@ -1,166 +1,380 @@
-import asyncio
+# tests/test_workflow_engine.py
+
 import json
 import pytest
-from pytest_asyncio.plugin import event_loop_policy
-from orchestrator.engine import OrchestrationEngine
-from schemas.workflow import NodeState
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-
-@pytest.fixture(scope="session")
-def event_loop():
-    policy = event_loop_policy()
-    asyncio.set_event_loop_policy(policy)
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
+from orchestrator.engine import OrchestrationEngine
+from schemas.workflow import NodeState
+from services.workflow_service import WorkflowService
+from orchestrator.engine import redis_client
 
 
-@pytest.fixture
-def mock_redis_client():
-    with patch(
-        "core.redis.RedisClient.connect", new_callable=AsyncMock
-    ) as mock_connect:
-        mock_connect.return_value = MagicMock()
-        mock_connect.return_value.ping = AsyncMock()
-        mock_connect.return_value.get = AsyncMock(
-            return_value='{"name": "Test Workflow", "dag": {"nodes": []}}'
+# ------------------------------------------------------------------
+# Global mock for Redis & Kafka (single source of truth)
+# ------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def patch_external_services():
+    with patch("services.workflow_service.redis_client") as mock_redis_service, patch(
+        "orchestrator.engine.redis_client"
+    ) as mock_redis_engine, patch("orchestrator.engine.kafka_client") as mock_kafka:
+
+        # -----------------------------
+        # WorkflowService Redis mocks
+        # -----------------------------
+        mock_redis_service.set_dag = AsyncMock()
+        mock_redis_service.set_workflow_meta = AsyncMock()
+        mock_redis_service.set_node_state = AsyncMock()
+        mock_redis_service.get_workflow_meta = AsyncMock(
+            return_value={"status": NodeState.PENDING.value}
         )
-        mock_connect.return_value.hset = AsyncMock()
-        mock_connect.return_value.hgetall = AsyncMock(return_value={})
-        mock_connect.return_value.set = AsyncMock()
-        mock_connect.return_value.expire = AsyncMock()
-        yield mock_connect
+        mock_redis_service.get_runtime_params = AsyncMock(return_value={})
+        mock_redis_service.mget = AsyncMock(return_value=[None, None, None])
+
+        # -----------------------------
+        # OrchestrationEngine Redis mocks
+        # -----------------------------
+        redis_store = {}
+
+        async def mock_set_node_state(key, state, output=None):
+            redis_store[key] = json.dumps({"state": state, "output": output or {}})
+
+        async def mock_mget(keys):
+            return [redis_store.get(k) for k in keys]
+
+        mock_redis_engine.get_dag = AsyncMock(return_value=None)
+        mock_redis_engine.set_node_state = AsyncMock(side_effect=mock_set_node_state)
+        mock_redis_engine.set_workflow_status = AsyncMock()
+        mock_redis_engine.get_runtime_params = AsyncMock(return_value={})
+        mock_redis_engine.set_runtime_params = AsyncMock()
+        mock_redis_engine.mget = AsyncMock(side_effect=mock_mget)
+        mock_redis_engine.sadd = AsyncMock(return_value=True)
+
+        # -----------------------------
+        # Kafka mock
+        # -----------------------------
+        mock_kafka.publish = AsyncMock()
+
+        yield
+
+
+# ------------------------------------------------------------------
+# Engine internal helpers
+# ------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_initialize():
-    engine = OrchestrationEngine("test_execution_id")
-    with patch("core.redis_client.get_dag", new_callable=AsyncMock) as mock_get_dag:
-        mock_get_dag.return_value = '{"name": "Test Workflow", "dag": {"nodes": []}}'  # Provide a valid mock response
-
-        with patch(
-            "services.workflow_service.WorkflowService.get_status",  # Updated to match existing method
-            new_callable=AsyncMock,
-        ) as mock_get_status:
-            mock_get_status.return_value = MagicMock(name="Test Workflow")
-            mock_get_status.return_value.name = "Test Workflow"
-
-            await engine.initialize()
-            assert engine.workflow.name == "Test Workflow"
-
-
-@pytest.mark.asyncio
-async def test_trigger(mock_redis_client):
-    engine = OrchestrationEngine("test_execution_id")
-    engine.initialize = AsyncMock()
-    engine._dispatch_ready_nodes = AsyncMock()
-
-    # Test without params
-    await engine.trigger()
-    engine.initialize.assert_called_once()
-    engine._dispatch_ready_nodes.assert_called_once()
-    mock_redis_client.return_value.hset.assert_not_called()
-
-    # Reset mocks
-    engine.initialize.reset_mock()
-    engine._dispatch_ready_nodes.reset_mock()
-    mock_redis_client.return_value.hset.reset_mock()
-
-    # Test with params
-    params = {"key": "value"}
-    await engine.trigger(params=params)
-    mock_redis_client.return_value.hset.assert_called_once_with(
-        "workflows:test_execution_id:params", mapping={"key": json.dumps("value")}
-    )
-    engine.initialize.assert_called_once()
-    engine._dispatch_ready_nodes.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_dispatch_ready_nodes():
-    engine = OrchestrationEngine("test_execution_id")
-    engine._get_all_node_states = AsyncMock(return_value={})
+async def test_dispatch_ready_nodes_calls_state_fetch():
+    engine = OrchestrationEngine("test-exec")
     engine.workflow = MagicMock()
     engine.workflow.dag.nodes = []
 
-    with patch(
-        "core.redis_client.get_runtime_params", new_callable=AsyncMock
-    ) as mock_get_runtime_params:
-        mock_get_runtime_params.return_value = {}
-        await engine._dispatch_ready_nodes()
+    engine._get_all_node_states = AsyncMock(return_value={})
+
+    await engine._dispatch_ready_nodes()
 
     engine._get_all_node_states.assert_called_once()
-
-
-# Mock Redis interactions to avoid real Redis calls
-@pytest.mark.asyncio
-async def test_process_node_completion():
-    import asyncio
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    engine = OrchestrationEngine("test_execution_id")
-    engine.initialize = AsyncMock()
-    engine._get_all_node_states = AsyncMock(return_value={})
-    engine._dispatch_ready_nodes = AsyncMock()
-    engine.workflow = MagicMock()
-    engine.workflow.dag = MagicMock()
-
-    with patch(
-        "core.redis_client.set_node_state", new_callable=AsyncMock
-    ) as mock_set_node_state, patch(
-        "core.redis_client.set_workflow_status", new_callable=AsyncMock
-    ) as mock_set_workflow_status:
-        await engine.process_node_completion("node_1", success=True)
-        mock_set_node_state.assert_called()
-        mock_set_workflow_status.assert_called()
-
-    loop.close()
 
 
 @pytest.mark.parametrize(
     "node_states,expected",
     [
-        ({"node_1": {"state": NodeState.COMPLETED.value}}, True),
-        ({"node_1": {"state": NodeState.PENDING.value}}, False),
+        ({"A": {"state": NodeState.COMPLETED.value}}, True),
+        ({"A": {"state": NodeState.PENDING.value}}, False),
     ],
 )
 def test_are_all_nodes_completed(node_states, expected):
-    engine = OrchestrationEngine("test_execution_id")
+    engine = OrchestrationEngine("exec-x")
     engine.workflow = MagicMock()
-    engine.workflow.dag.nodes = [MagicMock(id="node_1")]
+    engine.workflow.dag.nodes = [MagicMock(id="A")]
 
-    result = engine._are_all_nodes_completed(node_states)
-    assert result == expected
+    assert engine._are_all_nodes_completed(node_states) is expected
 
 
 def test_is_node_ready():
-    engine = OrchestrationEngine("test_execution_id")
-    node = MagicMock(id="node_1", dependencies=["node_0"])
+    engine = OrchestrationEngine("exec-x")
+    node = MagicMock(id="B", dependencies=["A"])
+
     node_states = {
-        "node_0": {"state": NodeState.COMPLETED.value},
-        "node_1": {"state": NodeState.PENDING.value},
+        "A": {"state": NodeState.COMPLETED.value},
+        "B": {"state": NodeState.PENDING.value},
     }
 
     assert engine._is_node_ready(node, node_states)
 
 
-def test_trigger_response():
-    from schemas.workflow import WorkflowTriggerResponse
+# ------------------------------------------------------------------
+# trigger()
+# ------------------------------------------------------------------
 
-    engine = OrchestrationEngine("test_execution_id")
-    execution_id = "test_execution_id"
 
-    # Test successful trigger
-    response = engine.trigger_response(execution_id, success=True)
-    assert response == WorkflowTriggerResponse(
-        execution_id=execution_id, status=NodeState.RUNNING
+@pytest.mark.asyncio
+async def test_trigger_sets_runtime_params_and_dispatches():
+    engine = OrchestrationEngine("exec-1")
+
+    engine.workflow = MagicMock()
+    engine.initialize = AsyncMock()
+    engine._dispatch_ready_nodes = AsyncMock()
+
+    with patch("orchestrator.engine.redis_client") as mock_redis:
+        mock_redis.set_runtime_params = AsyncMock()
+
+        params = {"A": {"foo": "bar"}}
+        await engine.trigger(params=params)
+
+        mock_redis.set_runtime_params.assert_called_once_with("exec-1", params)
+        engine._dispatch_ready_nodes.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_trigger_initializes_workflow_if_missing():
+    engine = OrchestrationEngine("exec-2")
+    engine.workflow = None
+
+    engine.initialize = AsyncMock(return_value=engine)
+    engine._dispatch_ready_nodes = AsyncMock()
+
+    await engine.trigger()
+
+    engine.initialize.assert_called_once()
+    engine._dispatch_ready_nodes.assert_called_once()
+
+
+# ------------------------------------------------------------------
+# process_node_completion()
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_process_node_completion_success_dispatches_next():
+    engine = OrchestrationEngine("exec-3")
+
+    engine.workflow = MagicMock()
+    engine.workflow.dag.nodes = [MagicMock(id="A")]
+
+    engine._get_all_node_states = AsyncMock(
+        return_value={"A": {"state": NodeState.COMPLETED.value}}
+    )
+    engine._are_all_nodes_completed = MagicMock(return_value=False)
+    engine._dispatch_ready_nodes = AsyncMock()
+
+    await engine.process_node_completion(
+        node_id="A",
+        output={"value": 123},
+        success=True,
     )
 
-    # Test failed trigger
-    response = engine.trigger_response(execution_id, success=False)
-    assert response == WorkflowTriggerResponse(
-        execution_id=execution_id, status=NodeState.FAILED
+    engine._dispatch_ready_nodes.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_process_node_failure_marks_workflow_failed():
+    engine = OrchestrationEngine("exec-4")
+    engine.workflow = MagicMock()
+
+    with patch("orchestrator.engine.redis_client") as mock_redis:
+        mock_redis.set_node_state = AsyncMock()
+        mock_redis.set_workflow_status = AsyncMock()
+
+        await engine.process_node_completion(
+            node_id="A",
+            output={"error": "boom"},
+            success=False,
+        )
+
+        mock_redis.set_node_state.assert_called_once()
+        mock_redis.set_workflow_status.assert_called_once_with(
+            engine.meta_key, NodeState.FAILED.value
+        )
+
+
+@pytest.mark.asyncio
+async def test_process_node_completion_marks_workflow_completed():
+    engine = OrchestrationEngine("exec-5")
+
+    engine.workflow = MagicMock()
+    engine.workflow.dag.nodes = [
+        MagicMock(id="A"),
+        MagicMock(id="B"),
+    ]
+
+    engine._get_all_node_states = AsyncMock(
+        return_value={
+            "A": {"state": NodeState.COMPLETED.value},
+            "B": {"state": NodeState.COMPLETED.value},
+        }
+    )
+
+    with patch("orchestrator.engine.redis_client") as mock_redis:
+        mock_redis.set_node_state = AsyncMock()
+        mock_redis.set_workflow_status = AsyncMock()
+
+        await engine.process_node_completion(
+            node_id="B",
+            output={"ok": True},
+            success=True,
+        )
+
+        mock_redis.set_workflow_status.assert_called_once_with(
+            engine.meta_key, NodeState.COMPLETED.value
+        )
+
+
+# ------------------------------------------------------------------
+# Template resolution & workflow behavior
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_template_resolution(linear_workflow):
+    service = WorkflowService()
+    execution_id = await service._validate_and_build(linear_workflow)
+
+    engine = OrchestrationEngine(execution_id)
+    engine.workflow = linear_workflow
+
+    node_states = {
+        "A": {"state": NodeState.COMPLETED.value, "output": {"result": "foo"}},
+        "B": {"state": NodeState.PENDING.value, "output": {}},
+        "C": {"state": NodeState.PENDING.value, "output": {}},
+    }
+
+    resolved = engine._resolve_template_value(
+        "{{ A.output.result }}",
+        node_states,
+        {},
+    )
+
+    assert resolved == "foo"
+
+
+@pytest.mark.asyncio
+async def test_node_failure_blocks_dependents(linear_workflow):
+    service = WorkflowService()
+    execution_id = await service._validate_and_build(linear_workflow)
+
+    engine = OrchestrationEngine(execution_id)
+    engine.workflow = linear_workflow
+
+    await engine.process_node_completion("A", success=False)
+
+    node_states = await engine._get_all_node_states()
+    assert node_states["A"]["state"] == NodeState.FAILED.value
+
+
+@pytest.mark.asyncio
+async def test_missing_template_variable_raises_error():
+    engine = OrchestrationEngine("exec-x")
+
+    node_states = {"A": {"state": NodeState.COMPLETED.value, "output": {}}}
+
+    with pytest.raises(ValueError):
+        engine._resolve_template_value(
+            "{{ A.output.missing_key }}",
+            node_states,
+            {},
+        )
+
+
+@pytest.mark.asyncio
+async def test_fan_in_race_condition(diamond_workflow):
+    engine = OrchestrationEngine(execution_id="test123")
+
+    # -----------------------------
+    # Patch redis_client inside orchestrator.engine
+    # -----------------------------
+    from orchestrator import engine as engine_module
+
+    # Return JSON string for Pydantic validation
+    async def mock_get_dag(execution_id):
+        return diamond_workflow.model_dump_json()
+
+    # In-memory Redis set for dispatched nodes
+    dispatched_set = set()
+    completed_set = set()
+
+    # Track dispatch calls
+    dispatch_count = {}
+
+    async def mock_sadd(name, value):
+        """Mock Redis SADD - returns True only if value was newly added"""
+        if "dispatched" in name:
+            if value not in dispatched_set:
+                dispatched_set.add(value)
+                # Track how many times we attempted to dispatch this node
+                dispatch_count[value] = dispatch_count.get(value, 0) + 1
+                return True
+            return False
+        elif "completed" in name:
+            completed_set.add(value)
+            return True
+        return False
+
+    async def mock_smembers(name):
+        """Mock Redis SMEMBERS - returns all members of a set"""
+        if "dispatched" in name:
+            return dispatched_set
+        elif "completed" in name:
+            return completed_set
+        return set()
+
+    engine_module.redis_client.get_dag = mock_get_dag
+    engine_module.redis_client.sadd = mock_sadd
+    engine_module.redis_client.smembers = mock_smembers
+
+    # -----------------------------
+    # Initialize engine
+    # -----------------------------
+    await engine.initialize()
+
+    # -----------------------------
+    # Pre-populate state: A has already been dispatched and B, C have been dispatched
+    # We're testing the completion of B and C triggering D
+    # -----------------------------
+    dispatched_set.add("A")
+    dispatched_set.add("B")
+    dispatched_set.add("C")
+    completed_set.add("A")  # A completed before B and C
+
+    # -----------------------------
+    # Simulate fan-in nodes sequentially (B -> C) to ensure deterministic test
+    # -----------------------------
+    await engine.process_node_completion("B", {"value": 1})
+    await engine.process_node_completion("C", {"value": 2})
+
+    # -----------------------------
+    # Assertions
+    # -----------------------------
+    dispatched = await engine_module.redis_client.smembers(engine.dispatched_set)
+
+    assert "D" in dispatched, "Node D should have been dispatched"
+    # Should have A, B, C (pre-existing) and D (newly dispatched)
+    assert dispatched == {
+        "A",
+        "B",
+        "C",
+        "D",
+    }, f"Expected A, B, C, D in dispatched set, got: {dispatched}"
+    assert (
+        dispatch_count.get("D", 0) == 1
+    ), f"Node D dispatch was attempted {dispatch_count.get('D', 0)} times, expected 1"
+
+
+@pytest.mark.asyncio
+async def test_workflow_completion_status(linear_workflow):
+    service = WorkflowService()
+    execution_id = await service._validate_and_build(linear_workflow)
+
+    engine = OrchestrationEngine(execution_id)
+    engine.workflow = linear_workflow
+
+    for node_id in ["A", "B", "C"]:
+        await engine.process_node_completion(node_id, success=True)
+
+    node_states = await engine._get_all_node_states()
+    assert all(
+        state["state"] == NodeState.COMPLETED.value for state in node_states.values()
     )
