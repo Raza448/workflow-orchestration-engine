@@ -101,6 +101,16 @@ The system includes a robust error handling and retry mechanism to handle transi
 - **Worker Retries**: When a task fails, the Worker will automatically retry it up to a configurable number of times (`MAX_RETRIES`). An exponential backoff strategy is used to avoid overwhelming a failing service.
 - **Workflow Failure**: If a task fails after all retries, it is marked as `FAILED`, and the entire workflow is halted to prevent further execution. The reason for the failure is recorded in the node's output for debugging purposes.
 
+### Handling Failed Nodes
+
+When a node fails due to template resolution errors or task execution failures, it is marked as FAILED and the workflow halts.
+
+Failed nodes are not automatically retried; users can submit a new workflow with corrected inputs or parameters.
+
+This approach ensures the workflow state accurately reflects real errors and prevents unintentional re-execution of tasks.
+
+The design allows easy extension to support optional retry mechanisms for failed nodes in future versions if desired.
+
 ## 7. Configuration
 
 The application is configured using environment variables, which are loaded into a Pydantic `Settings` object. The following variables are available:
@@ -120,3 +130,4 @@ The application is configured using environment variables, which are loaded into
 - **Complex Node Types**: Add support for more complex node types, such as conditional nodes  and loops (e.g., `for`).
 - **Security**: Implement authentication and authorization to secure the API endpoints.
 - **PostgreSQL**: Use PostgreSQL to store the graph JSON schema for workflows, enabling better querying, versioning, and persistence of workflow definitions.
+- **Enhancements for Failed Node Retries**: Future versions could support optional retry of failed nodes without requiring new workflow submission. Include retry counts and history to prevent infinite loops and improve observability. Allow node-level or workflow-level retry control via optional parameters, giving users explicit choice over re-execution. Ensure all retries remain idempotent and safe, particularly for nodes with side effects in production.

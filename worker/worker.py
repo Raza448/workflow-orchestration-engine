@@ -139,12 +139,12 @@ class KafkaWorker:
 
     async def _handle_call_external_service(self, config):
         """Handles the 'call_external_service' logic."""
-        await asyncio.sleep(random.uniform(0.5, 1.0))
+        await asyncio.sleep(random.uniform(1.0, 2.0))
         return {"data": f"Response from {config.get('url')}"}
 
     async def _handle_call_llm_service(self, config):
         """Handles the 'call_llm_service' logic."""
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(2)
         return {
             "result": f"LLM generated a summary for the prompt '{config.get('prompt')}'"
         }
