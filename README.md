@@ -179,6 +179,7 @@ Trigger the execution of a workflow. This endpoint accepts an optional JSON body
    }
 }
 ```
+> **Note**: Ensure that the node ID used in the parameter matches the node ID defined in the workflow. In this example, `summarize_posts` is the node ID being referenced.
 
 **Response Body:**
 
